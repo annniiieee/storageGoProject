@@ -1,10 +1,10 @@
 package main
 
 import (
-	"fmt"       // sys print
-	"math/rand" // generate random strings
-	"sync"      // locks
-	"time"      // latency calculation
+	"fmt"
+	"math/rand"
+	"sync"
+	"time"
 )
 
 const letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
@@ -30,13 +30,13 @@ func newTransaction() transaction {
 }
 
 type systemState struct {
-	totalTransactions int
-	//latencies          []time.Duration
+	totalTransactions  int
 	transactionStorage map[string]time.Duration // [transaction.id, transaction.latency]
+	tpsValues          []int
 }
 
 func main() {
-	transactionChannel := make(chan transaction, 100) // buffer amount should depend on TPS
+	transactionChannel := make(chan transaction, 10) // buffer amount should depend on TPS ?
 	systemState := systemState{
 		transactionStorage: make(map[string]time.Duration),
 	}
@@ -67,9 +67,9 @@ func main() {
 	go func() {
 		defer wg.Done()
 		// timers = countdown, so use tickers
-		// tickers for repeatedly events at reg intervals in future
-		ticker := time.NewTicker(1 * time.Second) // bc tpS
-		defer ticker.Stop()                       // calls .Stop no matter what
+		// tickers for repeatedly events at reg intervals in future, 1 sec in our case
+		ticker := time.NewTicker(1 * time.Second)
+		defer ticker.Stop() // calls .Stop no matter what
 		var lock sync.Mutex
 		var lastTotal int
 
@@ -78,9 +78,9 @@ func main() {
 			lock.Lock()
 			tps := (systemState.totalTransactions - lastTotal)
 			lastTotal = systemState.totalTransactions
+			systemState.tpsValues = append(systemState.tpsValues, tps)
 			lock.Unlock()
 
-			fmt.Printf("TPS %d\n", tps)
 			if tps == 0 {
 				break
 			}
@@ -102,9 +102,20 @@ func main() {
 		time.Sleep(time.Duration(rand.Intn(100)) * time.Millisecond) // random simulating "wait time" bc transactions were saved within milliseconds making TPS = max range
 	}
 
-	senderWg.Wait()
+	senderWg.Wait() // don't end, wait after waitgroups
 	// After sending all transactions
 	close(transactionChannel) // let goroutine know there's no more input
-	// time.Sleep(time.Second) ///// blindly delaying the goroutines is so bad use waitgroup instead
+
 	wg.Wait()
+
+	fmt.Println("All latency values:")
+	for j, val := range systemState.transactionStorage {
+		fmt.Printf("Transaction: %s, latency: %s\n", j, val)
+	}
+
+	fmt.Println("All TPS values:")
+	for i, val := range systemState.tpsValues {
+		fmt.Printf("Second %d: TPS = %d\n", i+1, val)
+	}
+
 }
