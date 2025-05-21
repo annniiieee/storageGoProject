@@ -20,28 +20,37 @@ func randomString() string {
 type transaction struct {
 	id        string // generate a random string
 	startTime time.Time
-}
-
-func newTransaction() transaction {
-	return transaction{
-		id:        randomString(),
-		startTime: time.Now(),
-	}
+	endTime   time.Time
 }
 
 type systemState struct {
 	totalTransactions  int
-	transactionStorage map[string]time.Duration // [transaction.id, transaction.latency]
-	tpsValues          []int
+	transactionStorage map[int]transaction // [id, transaction]
 }
 
 func main() {
-	transactionChannel := make(chan transaction, 10) // buffer amount should depend on TPS ?
+	transactionChannel := make(chan transaction, 20) // buffer amount should depend on TPS ?
 	systemState := systemState{
-		transactionStorage: make(map[string]time.Duration),
+		transactionStorage: make(map[int]transaction),
 	}
 	var mutex sync.Mutex
 	var wg sync.WaitGroup
+
+	//simulating transaction enterring the channel using threads
+	var senderWg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		senderWg.Add(1)
+		t := transaction{
+			id:        randomString(),
+			startTime: time.Now(),
+		}
+
+		go func(tr transaction) {
+			defer senderWg.Done()
+			transactionChannel <- tr
+			fmt.Printf("Transaction in channel with ID: %s\n", tr.id)
+		}(t)
+	}
 
 	wg.Add(1)
 	// thread to calculate latency
@@ -49,58 +58,18 @@ func main() {
 		//call .Done no matter what happens to goroutine
 		defer wg.Done() // placed at the beginning to keep it safe from early return & panic
 		for t := range transactionChannel {
-			latency := time.Since(t.startTime)
 			// add to storage
 			mutex.Lock()
-			systemState.transactionStorage[t.id] = latency
+			t.endTime = time.Now()
+			systemState.transactionStorage[systemState.totalTransactions] = t
 			systemState.totalTransactions++
 			mutex.Unlock()
 
-			fmt.Printf("Stored transaction with ID %s and latency of %s\n", t.id, latency)
+			fmt.Printf("Stored transaction with ID %s and latency of %s\n", t.id, t.endTime.Sub(t.startTime))
 		}
 		fmt.Printf("Total transactions in system: %d\n", systemState.totalTransactions)
 
 	}()
-
-	wg.Add(1)
-	// TPS calculation thread
-	go func() {
-		defer wg.Done()
-		// timers = countdown, so use tickers
-		// tickers for repeatedly events at reg intervals in future, 1 sec in our case
-		ticker := time.NewTicker(1 * time.Second)
-		defer ticker.Stop() // calls .Stop no matter what
-		var lock sync.Mutex
-		var lastTotal int
-
-		// tps = current - last
-		for range ticker.C {
-			lock.Lock()
-			tps := (systemState.totalTransactions - lastTotal)
-			lastTotal = systemState.totalTransactions
-			systemState.tpsValues = append(systemState.tpsValues, tps)
-			lock.Unlock()
-
-			if tps == 0 {
-				break
-			}
-		}
-	}()
-
-	//simulating transaction enterring the channel using threads
-	var senderWg sync.WaitGroup
-	for i := 0; i < 50; i++ {
-		senderWg.Add(1)
-		var t transaction
-		t = newTransaction()
-
-		go func() {
-			defer senderWg.Done()
-			transactionChannel <- t
-			fmt.Printf("Transaction in channel with ID: %s\n", t.id)
-		}()
-		time.Sleep(time.Duration(rand.Intn(100)) * time.Millisecond) // random simulating "wait time" bc transactions were saved within milliseconds making TPS = max range
-	}
 
 	senderWg.Wait() // don't end, wait after waitgroups
 	// After sending all transactions
@@ -108,14 +77,37 @@ func main() {
 
 	wg.Wait()
 
-	fmt.Println("All latency values:")
-	for j, val := range systemState.transactionStorage {
-		fmt.Printf("Transaction: %s, latency: %s\n", j, val)
+	fmt.Println("All transactions with timestamps and latency:")
+	var firstEnd time.Time
+	var lastEnd time.Time
+	first := true
+
+	for _, t := range systemState.transactionStorage {
+		latency := t.endTime.Sub(t.startTime)
+		fmt.Printf("ID: %s | Start: %s | End: %s | Latency: %s\n",
+			t.id,
+			t.startTime.Format(time.RFC3339Nano),
+			t.endTime.Format(time.RFC3339Nano),
+			latency)
+
+		if first {
+			firstEnd = t.endTime
+			lastEnd = t.endTime
+			first = false
+		} else {
+			if t.endTime.Before(firstEnd) {
+				firstEnd = t.endTime
+			}
+			if t.endTime.After(lastEnd) {
+				lastEnd = t.endTime
+			}
+		}
 	}
 
-	fmt.Println("All TPS values:")
-	for i, val := range systemState.tpsValues {
-		fmt.Printf("Second %d: TPS = %d\n", i+1, val)
-	}
+	// Calculate and print final TPS
+	totalTime := lastEnd.Sub(firstEnd).Seconds()
+	tps := float64(systemState.totalTransactions) / totalTime
+	fmt.Printf("\nEffective TPS (Total: %d, Duration: %.4f seconds): %.2f\n",
+		systemState.totalTransactions, totalTime, tps)
 
 }
